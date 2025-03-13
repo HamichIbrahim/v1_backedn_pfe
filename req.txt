@@ -1,0 +1,6 @@
+langchain
+neo4j
+rest_framework
+django
+langchain_community
+langchain_core
