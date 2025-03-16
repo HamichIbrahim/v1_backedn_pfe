@@ -7,102 +7,121 @@ from rest_framework.response import Response
 from graphapi.utility import run_query
 from django.http import JsonResponse
 
+
+from rest_framework.decorators import api_view
+from rest_framework.response import Response
+from graphapi.utility import run_query  # Ensure this function runs Cypher queries
+
+@api_view(['POST'])
+def fetch_distinct_relations(request):
+    query = """
+    CALL db.relationshipTypes() YIELD relationshipType
+    RETURN COLLECT(relationshipType) AS distinct_relationships
+    """
+    
+    try:
+        result = run_query(query)
+        return Response({"distinct_relationships": result[0]['distinct_relationships']}, status=200)
+    except Exception as e:
+        return Response({"error": str(e)}, status=500)
+
+
 @api_view(['POST'])
 def Node_clasification(request):
-    # Split the query into individual statements
-    queries = [
-        """
-        // Part 1: Create contactWithPhone relationships
-        MATCH (p1:Personne)-[:Proprietaire]-(ph1:Phone)-[ap:Appel_telephone]->(ph2:Phone)-[:Proprietaire]-(p2:Personne)
+    # Extract templates and depth from the request
+    templates = request.data.get('templates', [])
+    depth = int(request.data.get('depth', 1))  # Default depth is 1
+
+    # Validate templates and depth
+    if not templates:
+        return JsonResponse({"error": "No templates provided."}, status=400)
+    if depth < 1:
+        return JsonResponse({"error": "Depth must be at least 1."}, status=400)
+
+    # Generate Part 1 queries for each template
+    part1_queries = []
+    for template in templates:
+        query = f"""
+        // Part 1: Create contactWithRelation relationships for template: {template}
+        MATCH {template}
         WHERE p1 <> p2
-        WITH p1, p2, ap.duree_sec AS call_duration
-        ORDER BY p1.identity, p2.identity
-        WITH p1, p2, 
-             SUM(call_duration) AS total_call_duration, 
-             COUNT(*) AS call_count
-        MERGE (p1)-[e:contactWithPhone]->(p2)
-        SET e.total_call_duration = total_call_duration,
-            e.call_count = call_count;
-        """,
+        WITH p1, p2
+        MERGE (p1)-[e:contactWithRelation]->(p2);
         """
-        // Part 2: Calculate Lvl_of_Implications for each Personne node
-        MATCH (p:Personne)
-        OPTIONAL MATCH (p)-[r:Impliquer]-(:Affaire)  
-        WITH p, COUNT(r) AS num_affaires_LvL0
+        part1_queries.append(query)
 
-        OPTIONAL MATCH (p)-[:contactWithPhone]-(p1:Personne)-[r1:Impliquer]-(:Affaire)
-        WITH p, num_affaires_LvL0, COUNT(r1) AS num_affaires_LvL1
+    # Generate Part 2 query dynamically based on depth
+    part2_query = """
+    // Part 2: Calculate _Lvl_of_Implications for each Personne node
+    MATCH (p:Personne)
+    OPTIONAL MATCH (p)-[r:Impliquer]-(:Affaire)  
+    WITH p, COUNT(r) AS num_affaires_LvL0
+    """
 
-        OPTIONAL MATCH (p)-[:contactWithPhone]-(p1:Personne)
-                      -[:contactWithPhone]-(p2:Personne)
-                      -[r2:Impliquer]-(:Affaire)
-        WITH p, num_affaires_LvL0, num_affaires_LvL1, COUNT(r2) AS num_affaires_LvL2
+    # Dynamically add levels based on depth
+    for level in range(1, depth + 1):
+        part2_query += f"""
+        OPTIONAL MATCH (p)-[:contactWithRelation*{level}]-(p{level}:Personne)-[r{level}:Impliquer]-(:Affaire)
+        WITH p, {', '.join(f'num_affaires_LvL{i}' for i in range(level))}, COUNT(r{level}) AS num_affaires_LvL{level}
+        """
 
-        OPTIONAL MATCH (p)-[:contactWithPhone]-(p1:Personne)
-                      -[:contactWithPhone]-(p2:Personne)
-                      -[:contactWithPhone]-(p3:Personne)
-                      -[r3:Impliquer]-(:Affaire)
-        WITH p, num_affaires_LvL0, num_affaires_LvL1, num_affaires_LvL2, COUNT(r3) AS num_affaires_LvL3
+    # Finalize Part 2 query
+    part2_query += f"""
+    SET p._Lvl_of_Implications = [{', '.join(f'num_affaires_LvL{i}' for i in range(depth + 1))}];
+    """
 
-        OPTIONAL MATCH (p)-[:contactWithPhone]-(p1:Personne)
-                      -[:contactWithPhone]-(p2:Personne)
-                      -[:contactWithPhone]-(p3:Personne)
-                      -[:contactWithPhone]-(p4:Personne)
-                      -[r4:Impliquer]-(:Affaire)
-        WITH p, num_affaires_LvL0, num_affaires_LvL1, num_affaires_LvL2, num_affaires_LvL3, COUNT(r4) AS num_affaires_LvL4
-
-        SET p.Lvl_of_Implications = [num_affaires_LvL0, num_affaires_LvL1, num_affaires_LvL2, num_affaires_LvL3, num_affaires_LvL4];
-        """,
+    # Define the rest of the queries (Parts 3-7)
+    queries = part1_queries + [part2_query] + [
         """
         // Part 3: Initialize properties for all Personne nodes
         MATCH (p:Personne)
-        SET p.class = ["neutre"],
-            p.affireOpretioneele = [],
-            p.affiresoutin = [],
-            p.affireleader = [];
+        SET p._class = ["neutre"],
+            p._affireOpretioneele = [],
+            p._affiresoutin = [],
+            p._affireleader = [];
         """,
         """
-        // Part 4: Assign "operationeel" to Personne nodes with Lvl_of_Implications[0] > 0
+        // Part 4: Assign "operationeel" to Personne nodes with _Lvl_of_Implications[0] > 0
         MATCH (p:Personne)
-        WHERE "neutre" IN p.class AND p.Lvl_of_Implications[0] > 0
-        SET p.class = p.class + "operationeel"
+        WHERE "neutre" IN p._class AND p._Lvl_of_Implications[0] > 0
+        SET p._class = p._class + "operationeel"
         WITH p
         MATCH (p)-[:Impliquer]-(a:Affaire)
         WITH p, COLLECT(a.identity) AS affaire_ids
-        SET p.affireOpretioneele = affaire_ids;
+        SET p._affireOpretioneele = affaire_ids;
         """,
         """
         // Part 5: Assign "soutien" to Personne nodes connected to "operationeel" nodes
-        MATCH (p1:Personne)-[:contactWithPhone]-(p2:Personne)
-        WHERE "operationeel" IN p1.class AND p2.Lvl_of_Implications[1] > p1.Lvl_of_Implications[0]
-        SET p2.class = CASE WHEN NOT "soutien" IN p2.class THEN p2.class + "soutien" ELSE p2.class END,
-            p2.affiresoutin = p2.affiresoutin + p1.affireOpretioneele;
+        MATCH (p1:Personne)-[:contactWithRelation]-(p2:Personne)
+        WHERE "operationeel" IN p1._class AND p2._Lvl_of_Implications[1] > p1._Lvl_of_Implications[0]
+        SET p2._class = CASE WHEN NOT "soutien" IN p2._class THEN p2._class + "soutien" ELSE p2._class END,
+            p2._affiresoutin = p2._affiresoutin + p1._affireOpretioneele;
         """,
-        """
-        WITH range(1, 1) AS levels
+        f"""
+        WITH range(1, {depth - 1}) AS levels
         UNWIND levels AS i
-        MATCH (p1:Personne)-[:contactWithPhone]-(p2:Personne)
-        WHERE "soutien" IN p1.class AND p2.Lvl_of_Implications[i+1] > p1.Lvl_of_Implications[i]
-        SET p2.class = CASE WHEN NOT "soutien" IN p2.class THEN p2.class + "soutien" ELSE p2.class END,
-            p2.affiresoutin = p2.affiresoutin + p1.affiresoutin;
+        MATCH (p1:Personne)-[:contactWithRelation]-(p2:Personne)
+        WHERE "soutien" IN p1._class AND p2._Lvl_of_Implications[i+1] > p1._Lvl_of_Implications[i]
+        SET p2._class = CASE WHEN NOT "soutien" IN p2._class THEN p2._class + "soutien" ELSE p2._class END,
+            p2._affiresoutin = p2._affiresoutin + p1._affiresoutin;
         """,
-        """
+        f"""
         // Part 6: Assign "leader" to Personne nodes that qualify
         WITH range(1, 1) AS leader_levels
         UNWIND leader_levels AS i
         MATCH (p1:Personne)
-        WHERE "soutien" IN p1.class
+        WHERE "soutien" IN p1._class
         WITH p1, i,
-             ALL(p2 IN [(p1)-[:contactWithPhone]-(p2:Personne) | p2] 
-                 WHERE p2.Lvl_of_Implications[i] < p1.Lvl_of_Implications[i+1]) AS level_leader
+             ALL(p2 IN [(p1)-[:contactWithRelation]-(p2:Personne) | p2] 
+                 WHERE p2._Lvl_of_Implications[i] < p1._Lvl_of_Implications[i+1]) AS level_leader
         WITH p1, COLLECT(level_leader) AS leader_flags
         WHERE ANY(flag IN leader_flags WHERE flag = true)
-        SET p1.class = CASE WHEN NOT "leader" IN p1.class THEN p1.class + "leader" ELSE p1.class END,
-            p1.affireleader = p1.affiresoutin;
+        SET p1._class = CASE WHEN NOT "leader" IN p1._class THEN p1._class + "leader" ELSE p1._class END,
+            p1._affireleader = p1._affiresoutin;
         """,
         """
-        // Part 7: Delete all contactWithPhone relationships
-        MATCH (p1:Personne)-[r:contactWithPhone]-(p2:Personne)
+        // Part 7: Delete all contactWithRelation relationships
+        MATCH (p1:Personne)-[r:contactWithRelation]-(p2:Personne)
         DELETE r;
         """
     ]
@@ -110,14 +129,12 @@ def Node_clasification(request):
     # Execute each query sequentially
     results = []
     for query in queries:
+        print(query)
         data = run_query(query)
         results.append(data)
 
     # Return the result as a JSON response
     return JsonResponse(results, safe=False)
-
-
-
 
 
 @api_view(['POST'])
