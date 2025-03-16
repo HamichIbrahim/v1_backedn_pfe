@@ -61,25 +61,25 @@ def aggregate(request):
 
         with_clause = f"""
         WITH DISTINCT 
-            {start_alias}, 
-            {first_intermediate}, 
-            {end_alias}, 
-            {last_intermediate}, 
+            {start_alias} AS start_node, 
+            {first_intermediate} AS first_intermediate_node, 
+            {end_alias} AS end_node, 
+            {last_intermediate} AS last_intermediate_node, 
             count({aliases[1]}) as count
         WITH 
-            {start_alias}, 
-            apoc.map.merge(properties({start_alias}), properties({first_intermediate})) AS start_properties, 
-            {end_alias}, 
-            apoc.map.merge(properties({end_alias}), properties({last_intermediate})) AS end_properties, 
+            start_node, 
+            apoc.map.merge(properties(start_node), properties(first_intermediate_node)) AS start_properties, 
+            end_node, 
+            apoc.map.merge(properties(end_node), properties(last_intermediate_node)) AS end_properties, 
             count
         WITH 
             CASE 
-                WHEN {start_alias}.identity < {end_alias}.identity 
-                THEN {{startId: {start_alias}.identity, endId: {end_alias}.identity, type: "{sublist[3]}", count: count}}
-                ELSE {{startId: {end_alias}.identity, endId: {start_alias}.identity, type: "{sublist[3]}", count: count}}
+                WHEN start_node.identity < end_node.identity 
+                THEN {{startId: start_node.identity, endId: end_node.identity, type: "{sublist[3]}", count: count}}
+                ELSE {{startId: end_node.identity, endId: start_node.identity, type: "{sublist[3]}", count: count}}
             END AS relationship,
-            COLLECT(DISTINCT {{identity: {start_alias}.identity, type: labels({start_alias})[0], properties: start_properties}}) +
-            COLLECT(DISTINCT {{identity: {end_alias}.identity, type: labels({end_alias})[0], properties: end_properties}}) AS nodes
+            COLLECT(DISTINCT {{identity: start_node.identity, type: labels(start_node)[0], properties: start_properties}}) +
+            COLLECT(DISTINCT {{identity: end_node.identity, type: labels(end_node)[0], properties: end_properties}}) AS nodes
         RETURN nodes, COLLECT(DISTINCT relationship) AS relationships
         """
 
@@ -124,6 +124,8 @@ def aggregate(request):
 
         return Response({"nodes": nodes, "relationships": relationships}, status=200)
     except Exception as e:
+        print(e)
+        
         return Response({"error": f"Query failed: {str(e)}"}, status=500)
 
 @api_view(['POST'])

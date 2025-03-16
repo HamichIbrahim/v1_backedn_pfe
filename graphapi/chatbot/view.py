@@ -62,7 +62,7 @@ def chatbot(request):
 
         # Generate the Cypher query using the LLM
         formatted_prompt = few_shot_prompt.format(question=question, schema_description=schema_description)
-        cypher_query = call_ollama(formatted_prompt, model="tomasonjo/llama3-text2cypher-demo:latest")
+        cypher_query = call_ollama(formatted_prompt, model="hf.co/DavidLanz/text2cypher-gemma-2-9b-it-finetuned-2024v1:latest")
         
         # Replace specific terms in the Cypher query
         cypher_query = cypher_query.replace("nationel_id", "`رقم التعريف الوطني`")
