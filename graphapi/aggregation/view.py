@@ -48,6 +48,7 @@ def aggregate(request):
 
         # Construct the WHERE clause to filter by node IDs
         intermediate_aliases = aliases[1:-1]  # Exclude the first and last aliases
+        # intermediate_aliases = aliases
         if intermediate_aliases:  # Only add WHERE clause if there are intermediate nodes
             where_clause = "WHERE " + " AND ".join([f"{alias}.identity IN $id_nodes" for alias in intermediate_aliases])
         else:
